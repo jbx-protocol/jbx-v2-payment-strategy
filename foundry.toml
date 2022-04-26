@@ -8,6 +8,8 @@ remappings = [
     '@jbx-protocol-v2=lib/juice-contracts-v2',
     '@openzeppelin=lib/openzeppelin-contracts',
     '@paulrberg/contracts/math/=lib/prb-math/contracts',
+    '@uniswap/v3-core/=lib/uniswap-v3-core',
+    '@uniswap/v3-core/=lib/uniswap-v3-periphery',
     'ds-test/=lib/ds-test/src/',
     'forge-std/=lib/forge-std/src/',
 ]
