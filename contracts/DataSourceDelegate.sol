@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.6;
+pragma solidity 0.8.7;
 
 import '@jbx-protocol-v2/contracts/interfaces/IJBController.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleStore.sol';
@@ -8,18 +8,23 @@ import '@jbx-protocol-v2/contracts/interfaces/IJBPayDelegate.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBRedemptionDelegate.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBPayoutRedemptionPaymentTerminal.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBSingleTokenPaymentTerminalStore.sol';
+import '@jbx-protocol-v2/contracts/interfaces/IJBToken.sol';
 import '@jbx-protocol-v2/contracts/structs/JBFundingCycle.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBTokens.sol';
 
 import '@paulrberg/contracts/math/PRBMath.sol';
 import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
+import '@uniswap/v3-periphery/contracts/interfaces/external/IWETH9.sol';
+import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 
 contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRedemptionDelegate {
   error unAuth();
 
-  address private constant weth = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
-  address private constant jbx = address(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66);
-  address private constant jbxEthPool = address(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
+  IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+  IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66);
+
+  IUniswapV3Pool private constant jbxEthPool =
+    IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
 
   IJBPayoutRedemptionPaymentTerminal public immutable jbxTerminal;
   IJBSingleTokenPaymentTerminalStore public immutable terminalStore;
@@ -54,12 +59,16 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRed
   function didPay(JBDidPayData calldata _data) external override {
     if (msg.sender != address(jbxTerminal)) revert unAuth();
 
-    // Get the price of minting
+    // Get the amount received if minting
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
-    uint256 amountMinted = PRBMath.mulDiv(_data.amount.value, currentFundingCycle.weight, 10**18);
+    uint256 amountReceivedMinted = PRBMath.mulDiv(
+      _data.amount.value,
+      currentFundingCycle.weight,
+      10**18
+    );
 
-    // Get the price of buying
-    uint256 amountBought = OracleLibrary.getQuoteAtTick(
+    // Get the amount received if buying
+    uint256 amountReceivedBought = OracleLibrary.getQuoteAtTick(
       OracleLibrary.consult(address(jbxEthPool), uint32(twapPeriod)),
       uint128(_data.amount.value),
       weth,
@@ -80,18 +89,46 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRed
       currentFundingCycle.configuration
     );
 
-    // uniswapPrice < mintingPrice ? check if overflow allowance remaining > amount
-    // mint for reserved (use reserved rate = false)
-    // if address(this).balance < amount*uniswapPrice -> use overflow allowance
-
-    // swap 95% and send
-    // mint (rr=false) 5%
-
-    //else
-    // compute reserved based on mintingPrice
-    // mint to beneficiary (use reserved rate = false)
-    // mint for reserved (use reserved rate = false)
+    amountReceivedMinted < amountReceivedBought
+      ? currentAllowance - usedAllowance > _data.amount.value
+        ? _swap(_data) // Receiving more when swapping and enough overflow allowance to cover the price
+        : _mint() // Receiving more when swapping but not enought overflow to cover the swap
+      : _swap(); // Receiving more when minting
   }
+
+  function _swap(JBDidPayData calldata _data) internal {
+    //use overflow allowance
+
+    // wrap eth
+
+    // compute quote -> slippage?
+
+    // swap
+    pool.swap(
+      _data.beneficiary,
+      address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
+      int256(_data.amount.value),
+      priceLimit,
+      ''
+    );
+    // address recipient,
+    // bool zeroForOne,
+    // int256 amountSpecified,
+    // uint160 sqrtPriceLimitX96,
+    // bytes calldata data
+  }
+
+  // uniswapPrice < mintingPrice ? check if overflow allowance remaining > amount
+  // mint for reserved (use reserved rate = false)
+  // if address(this).balance < amount*uniswapPrice -> use overflow allowance
+
+  // swap 95% and send
+  // mint (rr=false) 5%
+
+  //else
+  // compute reserved based on mintingPrice
+  // mint to beneficiary (use reserved rate = false)
+  // mint for reserved (use reserved rate = false)
 
   // Uniswap callback(delta0, delta1)
   // transfer from this (eth taken from overflow allowance)
