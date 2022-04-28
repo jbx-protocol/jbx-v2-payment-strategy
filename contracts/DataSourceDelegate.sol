@@ -226,6 +226,7 @@ contract DataSourceDelegate is
   // solhint-disable-next-line comprehensive-interface
   fallback() external payable {}
 
+
   function redeemParams(JBRedeemParamsData calldata)
     external
     view
