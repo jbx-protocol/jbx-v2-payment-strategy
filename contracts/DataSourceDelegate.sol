@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.7;
+pragma solidity 0.8.6;
+
+import './interfaces/external/IWETH9.sol';
 
 import '@jbx-protocol-v2/contracts/interfaces/IJBController.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleStore.sol';
@@ -11,20 +13,26 @@ import '@jbx-protocol-v2/contracts/interfaces/IJBSingleTokenPaymentTerminalStore
 import '@jbx-protocol-v2/contracts/interfaces/IJBToken.sol';
 import '@jbx-protocol-v2/contracts/structs/JBFundingCycle.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBTokens.sol';
+import '@jbx-protocol-v2/contracts/libraries/JBCurrencies.sol';
 
 import '@paulrberg/contracts/math/PRBMath.sol';
 import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
-import '@uniswap/v3-periphery/contracts/interfaces/external/IWETH9.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
+import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol';
 
-contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRedemptionDelegate {
+contract DataSourceDelegate is
+  IJBFundingCycleDataSource,
+  IJBPayDelegate,
+  IJBRedemptionDelegate,
+  IUniswapV3SwapCallback
+{
   error unAuth();
+  error Slippage();
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
   IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66);
 
-  IUniswapV3Pool private constant jbxEthPool =
-    IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
+  IUniswapV3Pool private constant pool = IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
 
   IJBPayoutRedemptionPaymentTerminal public immutable jbxTerminal;
   IJBSingleTokenPaymentTerminalStore public immutable terminalStore;
@@ -61,18 +69,19 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRed
 
     // Get the amount received if minting
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
+
     uint256 amountReceivedMinted = PRBMath.mulDiv(
       _data.amount.value,
       currentFundingCycle.weight,
       10**18
     );
 
-    // Get the amount received if buying
+    // Get the amount received if swapping
     uint256 amountReceivedBought = OracleLibrary.getQuoteAtTick(
-      OracleLibrary.consult(address(jbxEthPool), uint32(twapPeriod)),
+      OracleLibrary.consult(address(pool), uint32(twapPeriod)),
       uint128(_data.amount.value),
-      weth,
-      jbx
+      address(weth),
+      address(jbx)
     );
 
     // Get the overflow allowance left
@@ -91,47 +100,81 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IJBRed
 
     amountReceivedMinted < amountReceivedBought
       ? currentAllowance - usedAllowance > _data.amount.value
-        ? _swap(_data) // Receiving more when swapping and enough overflow allowance to cover the price
-        : _mint() // Receiving more when swapping but not enought overflow to cover the swap
-      : _swap(); // Receiving more when minting
+        ? _swap(_data, amountReceivedBought) // Receiving more when swapping and enough overflow allowance to cover the price -> swap
+        : _mint() // Receiving more when swapping but not enought overflow to cover the swap -> mint
+      : _mint(); // Receiving more when minting -> mint
   }
 
-  function _swap(JBDidPayData calldata _data) internal {
-    //use overflow allowance
+  function _swap(JBDidPayData calldata _data, uint256 twapAmountReceived) internal {
+    // 95% to swap, 5% to mint
+    uint256 amountToSwap = (_data.amount.value * 95) / 100;
 
-    // wrap eth
+    //use overflow allowance to cover the cost
+    jbxTerminal.useAllowanceOf(
+      projectId,
+      amountToSwap,
+      JBCurrencies.ETH,
+      address(0),
+      amountToSwap,
+      payable(this),
+      ''
+    );
 
-    // compute quote -> slippage?
+    // Will serve to compute deviation in the swap callback
+    bytes memory swapCallbackData = abi.encode(twapAmountReceived);
 
-    // swap
+    // swap 95%
     pool.swap(
       _data.beneficiary,
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
-      int256(_data.amount.value),
-      priceLimit,
-      ''
+      int256(amountToSwap),
+      0, // sqrtPriceLimit -> will check against twap in callback
+      swapCallbackData
     );
-    // address recipient,
-    // bool zeroForOne,
-    // int256 amountSpecified,
-    // uint160 sqrtPriceLimitX96,
-    // bytes calldata data
+
+    // mint (rr = false) 5% to beneficiary + addToBalance
+
+    // mint for reserved (rr=false)
   }
 
-  // uniswapPrice < mintingPrice ? check if overflow allowance remaining > amount
-  // mint for reserved (use reserved rate = false)
-  // if address(this).balance < amount*uniswapPrice -> use overflow allowance
+  function _mint() internal {
+    // compute reserved based on mintingPrice
+    // mint to beneficiary (use reserved rate = false)
+    // mint for reserved (use reserved rate = false)
+  }
 
-  // swap 95% and send
-  // mint (rr=false) 5%
+  function uniswapV3SwapCallback(
+    int256 amount0Delta,
+    int256 amount1Delta,
+    bytes calldata data
+  ) external override {
+    if (msg.sender != address(pool)) revert unAuth();
 
-  //else
-  // compute reserved based on mintingPrice
-  // mint to beneficiary (use reserved rate = false)
-  // mint for reserved (use reserved rate = false)
+    // callbackData decode
+    uint256 twapAmountReceived = abi.decode(data, (uint256));
 
-  // Uniswap callback(delta0, delta1)
-  // transfer from this (eth taken from overflow allowance)
+    // Is JBX token1?
+    if (address(jbx) > address(weth)) {
+      // Receiving less than 5% of the twap predicted amount? no bueno
+      if (uint256(amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+
+      // wrap eth
+      weth.deposit{value: uint256(amount0Delta)}();
+
+      // send weth
+      weth.transfer(address(pool), uint256(amount0Delta));
+    } else {
+      if (uint256(amount0Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+      // wrap eth
+      weth.deposit{value: uint256(amount1Delta)}();
+
+      // send weth
+      weth.transfer(address(pool), uint256(amount1Delta));
+    }
+  }
+
+  // solhint-disable-next-line comprehensive-interface
+  fallback() external payable {}
 
   function redeemParams(JBRedeemParamsData calldata)
     external
