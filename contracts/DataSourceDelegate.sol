@@ -110,8 +110,8 @@ contract DataSourceDelegate is
           currentFundingCycle.weight,
           currentFundingCycle.reservedRate()
         ) // Receiving more when swapping and enough overflow allowance to cover the price -> swap
-        : _mint() // Receiving more when swapping but not enought overflow to cover the swap -> mint
-      : _mint(); // Receiving more when minting -> mint
+        : _mint(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate()) // Receiving more when swapping but not enought overflow to cover the swap -> mint
+      : _mint(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate()); // Receiving more when minting -> mint
   }
 
   function _swap(
@@ -146,7 +146,7 @@ contract DataSourceDelegate is
       swapCallbackData
     );
 
-    // mint (rr = false) 5% to beneficiary + addToBalance
+    // mint (rr = false) 5% to beneficiary (the eth stayed in Jb terminal)
     controller.mintTokensOf(
       projectId,
       (((_data.amount.value * 5) / 100) * weight) / 10**18,
@@ -167,10 +167,30 @@ contract DataSourceDelegate is
     );
   }
 
-  function _mint() internal {
-    // compute reserved based on mintingPrice
-    // mint to beneficiary (use reserved rate = false)
-    // mint for reserved (use reserved rate = false)
+  function _mint(
+    JBDidPayData calldata _data,
+    uint256 weight,
+    uint256 reservedRate
+  ) internal {
+    // mint (rr = false) to beneficiary
+    controller.mintTokensOf(
+      projectId,
+      (_data.amount.value * weight) / 10**18,
+      _data.beneficiary,
+      '',
+      false, // _preferClaimedTokens,
+      false //_useReservedRate
+    );
+
+    // mint for reserved (rr=true)
+    controller.mintTokensOf(
+      projectId,
+      (((_data.amount.value * reservedRate) / JBConstants.MAX_RESERVED_RATE) * weight) / 10**18,
+      _data.beneficiary,
+      '',
+      false, //_preferClaimedTokens,
+      true //_useReservedRate
+    );
   }
 
   function uniswapV3SwapCallback(
