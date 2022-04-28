@@ -11,9 +11,11 @@ import '@jbx-protocol-v2/contracts/interfaces/IJBRedemptionDelegate.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBPayoutRedemptionPaymentTerminal.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBSingleTokenPaymentTerminalStore.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBToken.sol';
-import '@jbx-protocol-v2/contracts/structs/JBFundingCycle.sol';
-import '@jbx-protocol-v2/contracts/libraries/JBTokens.sol';
+import '@jbx-protocol-v2/contracts/libraries/JBConstants.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBCurrencies.sol';
+import '@jbx-protocol-v2/contracts/libraries/JBFundingCycleMetadataResolver.sol';
+import '@jbx-protocol-v2/contracts/libraries/JBTokens.sol';
+import '@jbx-protocol-v2/contracts/structs/JBFundingCycle.sol';
 
 import '@paulrberg/contracts/math/PRBMath.sol';
 import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
@@ -26,6 +28,8 @@ contract DataSourceDelegate is
   IJBRedemptionDelegate,
   IUniswapV3SwapCallback
 {
+  using JBFundingCycleMetadataResolver for JBFundingCycle;
+
   error unAuth();
   error Slippage();
 
@@ -100,12 +104,22 @@ contract DataSourceDelegate is
 
     amountReceivedMinted < amountReceivedBought
       ? currentAllowance - usedAllowance > _data.amount.value
-        ? _swap(_data, amountReceivedBought) // Receiving more when swapping and enough overflow allowance to cover the price -> swap
+        ? _swap(
+          _data,
+          amountReceivedBought,
+          currentFundingCycle.weight,
+          currentFundingCycle.reservedRate()
+        ) // Receiving more when swapping and enough overflow allowance to cover the price -> swap
         : _mint() // Receiving more when swapping but not enought overflow to cover the swap -> mint
       : _mint(); // Receiving more when minting -> mint
   }
 
-  function _swap(JBDidPayData calldata _data, uint256 twapAmountReceived) internal {
+  function _swap(
+    JBDidPayData calldata _data,
+    uint256 twapAmountReceived,
+    uint256 weight,
+    uint256 reservedRate
+  ) internal {
     // 95% to swap, 5% to mint
     uint256 amountToSwap = (_data.amount.value * 95) / 100;
 
@@ -133,8 +147,24 @@ contract DataSourceDelegate is
     );
 
     // mint (rr = false) 5% to beneficiary + addToBalance
+    controller.mintTokensOf(
+      projectId,
+      (((_data.amount.value * 5) / 100) * weight) / 10**18,
+      _data.beneficiary,
+      '',
+      false, // _preferClaimedTokens,
+      false //_useReservedRate
+    );
 
-    // mint for reserved (rr=false)
+    // mint for reserved (rr=true)
+    controller.mintTokensOf(
+      projectId,
+      (((_data.amount.value * reservedRate) / JBConstants.MAX_RESERVED_RATE) * weight) / 10**18,
+      _data.beneficiary,
+      '',
+      false, //_preferClaimedTokens,
+      true //_useReservedRate
+    );
   }
 
   function _mint() internal {
