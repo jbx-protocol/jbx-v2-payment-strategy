@@ -203,10 +203,10 @@ contract DataSourceDelegate is
     // callbackData decode
     uint256 twapAmountReceived = abi.decode(data, (uint256));
 
-    // Is JBX token1?
+    // Is JBX token1? -> amount1delta will be negative (pool will send it) and 2 positive (pool will receive it)
     if (address(jbx) > address(weth)) {
       // Receiving less than 5% of the twap predicted amount? no bueno
-      if (uint256(amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+      if (uint256(-amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
 
       // wrap eth
       weth.deposit{value: uint256(amount0Delta)}();
@@ -214,7 +214,7 @@ contract DataSourceDelegate is
       // send weth
       weth.transfer(address(pool), uint256(amount0Delta));
     } else {
-      if (uint256(amount0Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+      if (uint256(-amount0Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
       // wrap eth
       weth.deposit{value: uint256(amount1Delta)}();
 
@@ -225,7 +225,6 @@ contract DataSourceDelegate is
 
   // solhint-disable-next-line comprehensive-interface
   fallback() external payable {}
-
 
   function redeemParams(JBRedeemParamsData calldata)
     external
