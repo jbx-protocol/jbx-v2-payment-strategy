@@ -60,9 +60,9 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       IJBPayDelegate delegate
     )
   {
-    // Get the amount received if minting
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
 
+    // Get the amount received if minting in pay()
     uint256 amountReceivedMinted = PRBMath.mulDiv(
       _data.amount.value,
       currentFundingCycle.weight,
@@ -95,7 +95,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       amountReceivedMinted < amountReceivedBought && // Swapping returns highest amount of token..
       currentAllowance - usedAllowance > _data.amount.value // .. and enough overflow allowance to cover the price
     ) return (0, _data.memo, IJBPayDelegate(address(this)));
-    // then swap
     else return (_data.weight, _data.memo, IJBPayDelegate(address(0))); // if not, follow the pay(..) path and mint
   }
 
@@ -163,24 +162,19 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
     uint256 twapAmountReceived = abi.decode(data, (uint256));
 
-    // Is JBX token1? -> amount1delta will be negative (pool will send it) and 2 positive (pool will receive it)
-    if (address(jbx) > address(weth)) {
-      // Receiving less than 5% of the twap predicted amount? no bueno
-      if (uint256(-amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+    // Put JBX received in amount1 and weth owned in amount0
+    (amount0Delta, amount1Delta) = address(jbx) > address(weth)
+      ? (amount0Delta, amount1Delta)
+      : (amount1Delta, amount0Delta);
 
-      // wrap eth
-      weth.deposit{value: uint256(amount0Delta)}();
+    // Receiving less than 5% of the twap predicted amount? no bueno
+    if (uint256(-amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
 
-      // send weth
-      weth.transfer(address(pool), uint256(amount0Delta));
-    } else {
-      if (uint256(-amount0Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
-      // wrap eth
-      weth.deposit{value: uint256(amount1Delta)}();
+    // wrap eth
+    weth.deposit{value: uint256(amount0Delta)}();
 
-      // send weth
-      weth.transfer(address(pool), uint256(amount1Delta));
-    }
+    // send weth
+    weth.transfer(address(pool), uint256(amount0Delta));
   }
 
   // solhint-disable-next-line comprehensive-interface
