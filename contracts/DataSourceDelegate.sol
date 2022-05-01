@@ -22,12 +22,7 @@ import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol';
 
-contract DataSourceDelegate is
-  IJBFundingCycleDataSource,
-  IJBPayDelegate,
-  IJBRedemptionDelegate,
-  IUniswapV3SwapCallback
-{
+contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUniswapV3SwapCallback {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
 
   error unAuth();
@@ -65,12 +60,6 @@ contract DataSourceDelegate is
       IJBPayDelegate delegate
     )
   {
-    return (0, _data.memo, IJBPayDelegate(address(this)));
-  }
-
-  function didPay(JBDidPayData calldata _data) external override {
-    if (msg.sender != address(jbxTerminal)) revert unAuth();
-
     // Get the amount received if minting
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
 
@@ -102,28 +91,39 @@ contract DataSourceDelegate is
       currentFundingCycle.configuration
     );
 
-    amountReceivedMinted < amountReceivedBought
-      ? currentAllowance - usedAllowance > _data.amount.value
-        ? _swap(
-          _data,
-          amountReceivedBought,
-          currentFundingCycle.weight,
-          currentFundingCycle.reservedRate()
-        ) // Receiving more when swapping and enough overflow allowance to cover the price -> swap
-        : _mint(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate()) // Receiving more when swapping but not enought overflow to cover the swap -> mint
-      : _mint(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate()); // Receiving more when minting -> mint
+    if (
+      amountReceivedMinted < amountReceivedBought && // Swapping returns highest amount of token..
+      currentAllowance - usedAllowance > _data.amount.value // .. and enough overflow allowance to cover the price
+    ) return (0, _data.memo, IJBPayDelegate(address(this)));
+    // then swap
+    else return (_data.weight, _data.memo, IJBPayDelegate(address(0))); // if not, follow the pay(..) path and mint
+  }
+
+  function didPay(JBDidPayData calldata _data) external override {
+    if (msg.sender != address(jbxTerminal)) revert unAuth();
+    JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
+    _swap(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate());
   }
 
   function _swap(
     JBDidPayData calldata _data,
-    uint256 twapAmountReceived,
     uint256 weight,
     uint256 reservedRate
   ) internal {
-    // 95% to swap, 5% to mint
+    // 95% swapped
     uint256 amountToSwap = (_data.amount.value * 95) / 100;
 
-    //use overflow allowance to cover the cost
+    // amount received in theory, based on twap
+    uint256 twapAmountReceived = OracleLibrary.getQuoteAtTick(
+      OracleLibrary.consult(address(pool), uint32(twapPeriod)),
+      uint128(amountToSwap),
+      address(weth),
+      address(jbx)
+    );
+
+    bytes memory _swapCallData = abi.encode(twapAmountReceived);
+
+    //use overflow allowance to cover the cost of swap
     jbxTerminal.useAllowanceOf(
       projectId,
       amountToSwap,
@@ -134,52 +134,13 @@ contract DataSourceDelegate is
       ''
     );
 
-    // Will serve to compute deviation in the swap callback
-    bytes memory swapCallbackData = abi.encode(twapAmountReceived);
-
     // swap 95%
     pool.swap(
       _data.beneficiary,
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
       int256(amountToSwap),
       0, // sqrtPriceLimit -> will check against twap in callback
-      swapCallbackData
-    );
-
-    // mint (rr = false) 5% to beneficiary (the eth stayed in Jb terminal)
-    controller.mintTokensOf(
-      projectId,
-      (((_data.amount.value * 5) / 100) * weight) / 10**18,
-      _data.beneficiary,
-      '',
-      false, // _preferClaimedTokens,
-      false //_useReservedRate
-    );
-
-    // mint for reserved (rr=true)
-    controller.mintTokensOf(
-      projectId,
-      (((_data.amount.value * reservedRate) / JBConstants.MAX_RESERVED_RATE) * weight) / 10**18,
-      _data.beneficiary,
-      '',
-      false, //_preferClaimedTokens,
-      true //_useReservedRate
-    );
-  }
-
-  function _mint(
-    JBDidPayData calldata _data,
-    uint256 weight,
-    uint256 reservedRate
-  ) internal {
-    // mint (rr = false) to beneficiary
-    controller.mintTokensOf(
-      projectId,
-      (_data.amount.value * weight) / 10**18,
-      _data.beneficiary,
-      '',
-      false, // _preferClaimedTokens,
-      false //_useReservedRate
+      _swapCallData
     );
 
     // mint for reserved (rr=true)
@@ -200,7 +161,6 @@ contract DataSourceDelegate is
   ) external override {
     if (msg.sender != address(pool)) revert unAuth();
 
-    // callbackData decode
     uint256 twapAmountReceived = abi.decode(data, (uint256));
 
     // Is JBX token1? -> amount1delta will be negative (pool will send it) and 2 positive (pool will receive it)
@@ -224,9 +184,15 @@ contract DataSourceDelegate is
   }
 
   // solhint-disable-next-line comprehensive-interface
-  fallback() external payable {}
+  receive() external payable {}
 
-  function redeemParams(JBRedeemParamsData calldata)
+  function supportsInterface(bytes4 _interfaceId) external pure override returns (bool) {
+    return
+      _interfaceId == type(IJBFundingCycleDataSource).interfaceId ||
+      _interfaceId == type(IJBPayDelegate).interfaceId;
+  }
+
+  function redeemParams(JBRedeemParamsData calldata _data)
     external
     view
     override
@@ -235,16 +201,5 @@ contract DataSourceDelegate is
       string memory memo,
       IJBRedemptionDelegate delegate
     )
-  {
-    return (0, '', IJBRedemptionDelegate(address(this)));
-  }
-
-  function didRedeem(JBDidRedeemData calldata _data) external override {}
-
-  function supportsInterface(bytes4 _interfaceId) external pure override returns (bool) {
-    return
-      _interfaceId == type(IJBFundingCycleDataSource).interfaceId ||
-      _interfaceId == type(IJBPayDelegate).interfaceId ||
-      _interfaceId == type(IJBRedemptionDelegate).interfaceId;
-  }
+  {}
 }
