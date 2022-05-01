@@ -39,7 +39,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   IJBFundingCycleStore public immutable fundingCycleStore;
   IJBController public immutable controller;
 
-  uint32 private constant twapPeriod = 120;
+  uint32 private constant twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
   uint256 public constant projectId = 1;
 
   constructor(IJBPayoutRedemptionPaymentTerminal _jbxTerminal) {
