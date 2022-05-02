@@ -170,23 +170,15 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   }
 
   function _swap(JBDidPayData calldata _data, uint256 weight) internal {
-    // 95% swapped
-    uint256 amountToSwap = (_data.amount.value * 95) / 100;
+    // Swap 95% of the amount paid in.
+    uint256 _amountToSwap = (_data.amount.value * 95) / 100;
 
-    // amount received in theory, based on twap
-    uint256 twapAmountReceived = OracleLibrary.getQuoteAtTick(
-      OracleLibrary.consult(address(pool), uint32(twapPeriod)),
-      uint128(amountToSwap),
-      address(weth),
-      address(jbx)
-    );
+    bytes memory _swapCallData = abi.encode(_swapTokenCount);
 
-    bytes memory _swapCallData = abi.encode(twapAmountReceived);
-
-    //use overflow allowance to cover the cost of swap
+    // Use overflow allowance to cover the cost of swap.
     jbxTerminal.useAllowanceOf(
       projectId,
-      amountToSwap,
+      _amountToSwap,
       JBCurrencies.ETH,
       address(0),
       amountToSwap,
@@ -194,11 +186,11 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       ''
     );
 
-    // swap 95%
+    // Execute the swap.
     pool.swap(
       _data.beneficiary,
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
-      int256(amountToSwap),
+      int256(_amountToSwap),
       0, // sqrtPriceLimit -> will check against twap in callback
       _swapCallData
     );
@@ -211,7 +203,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   ) external override {
     if (msg.sender != address(pool)) revert unAuth();
 
-    uint256 twapAmountReceived = abi.decode(data, (uint256));
+    uint256 _twapAmountReceived = abi.decode(data, (uint256));
 
     // Put JBX received in amount1 and weth owned in amount0
     (amount0Delta, amount1Delta) = address(jbx) > address(weth)
@@ -219,7 +211,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       : (amount1Delta, amount0Delta);
 
     // Receiving less than 5% of the twap predicted amount? no bueno
-    if (uint256(-amount1Delta) < (twapAmountReceived * 95) / 100) revert Slippage();
+    if (uint256(-amount1Delta) < (_twapAmountReceived * 95) / 100) revert Slippage();
 
     // wrap eth
     weth.deposit{value: uint256(amount0Delta)}();
