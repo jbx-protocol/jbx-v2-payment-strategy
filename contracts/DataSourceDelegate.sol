@@ -37,17 +37,19 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   IJBSingleTokenPaymentTerminalStore public immutable terminalStore;
   IJBDirectory public immutable directory;
   IJBFundingCycleStore public immutable fundingCycleStore;
-  IJBController public immutable controller;
 
   uint32 private constant twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
   uint256 public constant projectId = 1;
+  uint256 public immutable reservedRate;
+  uint256 private _swapTokenCount;
+  uint256 private _mintTokenCount;
 
-  constructor(IJBPayoutRedemptionPaymentTerminal _jbxTerminal) {
+  constructor(IJBPayoutRedemptionPaymentTerminal _jbxTerminal, uint256 _reservedRate) {
     terminalStore = _jbxTerminal.store();
     directory = _jbxTerminal.directory();
     fundingCycleStore = _jbxTerminal.store().fundingCycleStore();
-    controller = IJBController(_jbxTerminal.directory().controllerOf(projectId)); // Juicebox project ID
     jbxTerminal = _jbxTerminal;
+    reservedRate = _reservedRate;
   }
 
   function payParams(JBPayParamsData calldata _data)
@@ -60,55 +62,114 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       IJBPayDelegate delegate
     )
   {
-    JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
+    // The terminal must be the jbx terminal.
+    if (_data.terminal != address(jbxTerminal)) revert unAuth();
 
-    // Get the amount received if minting in pay()
-    uint256 amountReceivedMinted = PRBMath.mulDiv(
+    // Get the current funding cycle.
+    JBFundingCycle memory _currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
+
+    // The funding cycle's reserved rate must be 100%, otherwise proceed with the normal behavior.
+    if (_currentFundingCycle.reservedRate() != JBConstants.MAX_RESERVED_RATE)
+      return (_data.weight, _data.memo, IJBPayDelegate(address(0)));
+
+    // Get the token count that would be distributed by minting a new supply.
+    uint256 _mintTokenCountQuote = PRBMath.mulDiv(
       _data.amount.value,
-      currentFundingCycle.weight,
+      _currentFundingCycle.weight,
       10**18
     );
 
-    // Get the amount received if swapping
-    uint256 amountReceivedBought = OracleLibrary.getQuoteAtTick(
+    // Get the token count that would be distributed by swapping.
+    uint256 _swapTokenCountQuote = OracleLibrary.getQuoteAtTick(
       OracleLibrary.consult(address(pool), uint32(twapPeriod)),
       uint128(_data.amount.value),
       address(weth),
       address(jbx)
     );
 
-    // Get the overflow allowance left
-    (uint256 currentAllowance, ) = controller.overflowAllowanceOf(
+    // Get the current overflow allowance.
+    (uint256 _currentAllowance, ) = IJBController(_jbxTerminal.directory().controllerOf(projectId))
+      .overflowAllowanceOf(
+        _data.projectId,
+        _currentFundingCycle.configuration,
+        _data.terminal,
+        JBTokens.ETH
+      );
+
+    // Get the current used amount of overflow.
+    uint256 _usedAllowance = terminalStore.usedOverflowAllowanceOf(
+      IJBSingleTokenPaymentTerminal(_data.terminal),
       _data.projectId,
-      currentFundingCycle.configuration,
-      IJBPaymentTerminal(msg.sender),
-      JBTokens.ETH
+      _currentFundingCycle.configuration
     );
 
-    uint256 usedAllowance = terminalStore.usedOverflowAllowanceOf(
-      IJBSingleTokenPaymentTerminal(msg.sender),
-      _data.projectId,
-      currentFundingCycle.configuration
-    );
-
+    // If swapping yields a better rate and there's enough overflow allowance to cover the swap.
     if (
-      amountReceivedMinted < amountReceivedBought && // Swapping returns highest amount of token..
-      currentAllowance - usedAllowance > _data.amount.value // .. and enough overflow allowance to cover the price
-    ) return (0, _data.memo, IJBPayDelegate(address(this)));
-    else return (_data.weight, _data.memo, IJBPayDelegate(address(0))); // if not, follow the pay(..) path and mint
+      _mintTokenCountQuote < _swapTokenCountQuote &&
+      _currentAllowance - _usedAllowance > _data.amount.value
+    ) {
+      // Get the weight which represents the amount being swapped for.
+      uint256 _swapWeight = PRBMath.mulDiv(_swapTokenCountQuote, 1E18, _data.amount.value);
+
+      // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
+      uint256 _reservedWeight = PRBMath.mulDiv(
+        _swapWeight,
+        JBConstants.MAX_RESERVED_RATE,
+        JBConstants.MAX_RESERVED_RATE - reservedRate
+      ) - _swapWeight;
+
+      // Store the token count to swap. This will be referenced and reset in the delegate.
+      _swapTokenCount = _swapTokenCountQuote;
+
+      // Return the weight of reserved tokens to distribute, forward the memo, and set this contract as the delegate to execute the swap.
+      return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
+    } else {
+      // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
+      uint256 _reservedWeight = PRBMath.mulDiv(
+        _data.weight,
+        JBConstants.MAX_RESERVED_RATE,
+        JBConstants.MAX_RESERVED_RATE - reservedRate
+      ) - _data.weight;
+
+      // Store the token count to mint. This will be referenced and reset in the delegate.
+      _mintTokenCount = _mintTokenCountQuote;
+
+      // Get a reference to the weight of reserved tokens to distribute.
+      return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
+    }
   }
 
   function didPay(JBDidPayData calldata _data) external override {
     if (msg.sender != address(jbxTerminal)) revert unAuth();
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
-    _swap(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate());
+
+    // Swap if needed.
+    if (_swapTokenCountQuote > 0) {
+      // Execute the swap.
+      _swap(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate());
+
+      // Reset the storage slot.
+      _swapTokenCountQuote = 0;
+    }
+
+    // Mint if needed.
+    if (_issueTokenCount > 0) {
+      // Mint new tokens for
+      controller.mintTokensOf(
+        projectId,
+        _issueTokenCount,
+        _data.beneficiary,
+        '',
+        false, //_preferClaimedTokens,
+        false //_useReservedRate
+      );
+
+      // Reset the storage slot.
+      _mintTokenCountQuote = 0;
+    }
   }
 
-  function _swap(
-    JBDidPayData calldata _data,
-    uint256 weight,
-    uint256 reservedRate
-  ) internal {
+  function _swap(JBDidPayData calldata _data, uint256 weight) internal {
     // 95% swapped
     uint256 amountToSwap = (_data.amount.value * 95) / 100;
 
@@ -140,16 +201,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       int256(amountToSwap),
       0, // sqrtPriceLimit -> will check against twap in callback
       _swapCallData
-    );
-
-    // mint for reserved (rr=true)
-    controller.mintTokensOf(
-      projectId,
-      (((_data.amount.value * reservedRate) / JBConstants.MAX_RESERVED_RATE) * weight) / 10**18,
-      _data.beneficiary,
-      '',
-      false, //_preferClaimedTokens,
-      true //_useReservedRate
     );
   }
 
