@@ -42,7 +42,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   uint256 public constant projectId = 1;
   uint256 public immutable reservedRate;
   uint256 private _swapTokenCount;
-  uint256 private _mintTokenCount;
+  uint256 private _issueTokenCount;
 
   constructor(IJBPayoutRedemptionPaymentTerminal _jbxTerminal, uint256 _reservedRate) {
     terminalStore = _jbxTerminal.store();
@@ -54,7 +54,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
   function payParams(JBPayParamsData calldata _data)
     external
-    view
     override
     returns (
       uint256 weight,
@@ -63,7 +62,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     )
   {
     // The terminal must be the jbx terminal.
-    if (_data.terminal != address(jbxTerminal)) revert unAuth();
+    if (_data.terminal != jbxTerminal) revert unAuth();
 
     // Get the current funding cycle.
     JBFundingCycle memory _currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
@@ -88,7 +87,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     );
 
     // Get the current overflow allowance.
-    (uint256 _currentAllowance, ) = IJBController(_jbxTerminal.directory().controllerOf(projectId))
+    (uint256 _currentAllowance, ) = IJBController(jbxTerminal.directory().controllerOf(projectId))
       .overflowAllowanceOf(
         _data.projectId,
         _currentFundingCycle.configuration,
@@ -98,7 +97,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
     // Get the current used amount of overflow.
     uint256 _usedAllowance = terminalStore.usedOverflowAllowanceOf(
-      IJBSingleTokenPaymentTerminal(_data.terminal),
+      IJBSingleTokenPaymentTerminal(address(_data.terminal)),
       _data.projectId,
       _currentFundingCycle.configuration
     );
@@ -132,7 +131,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       ) - _data.weight;
 
       // Store the token count to mint. This will be referenced and reset in the delegate.
-      _mintTokenCount = _mintTokenCountQuote;
+      _issueTokenCount = _mintTokenCountQuote;
 
       // Get a reference to the weight of reserved tokens to distribute.
       return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
@@ -144,18 +143,18 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
 
     // Swap if needed.
-    if (_swapTokenCountQuote > 0) {
+    if (_swapTokenCount > 0) {
       // Execute the swap.
-      _swap(_data, currentFundingCycle.weight, currentFundingCycle.reservedRate());
+      _swap(_data, currentFundingCycle.weight);
 
       // Reset the storage slot.
-      _swapTokenCountQuote = 0;
+      _swapTokenCount = 0;
     }
 
     // Mint if needed.
     if (_issueTokenCount > 0) {
       // Mint new tokens for
-      controller.mintTokensOf(
+      IJBController(jbxTerminal.directory().controllerOf(projectId)).mintTokensOf(
         projectId,
         _issueTokenCount,
         _data.beneficiary,
@@ -165,7 +164,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       );
 
       // Reset the storage slot.
-      _mintTokenCountQuote = 0;
+      _issueTokenCount = 0;
     }
   }
 
@@ -181,7 +180,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       _amountToSwap,
       JBCurrencies.ETH,
       address(0),
-      amountToSwap,
+      _amountToSwap,
       payable(this),
       ''
     );
@@ -231,7 +230,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
   function redeemParams(JBRedeemParamsData calldata _data)
     external
-    view
     override
     returns (
       uint256 reclaimAmount,
