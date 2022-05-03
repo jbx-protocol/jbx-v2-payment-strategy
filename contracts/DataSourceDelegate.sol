@@ -145,7 +145,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     // Swap if needed.
     if (_swapTokenCount > 0) {
       // Execute the swap.
-      _swap(_data, currentFundingCycle.weight);
+      _swap(_data);
 
       // Reset the storage slot.
       _swapTokenCount = 0;
@@ -168,7 +168,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     }
   }
 
-  function _swap(JBDidPayData calldata _data, uint256 weight) internal {
+  function _swap(JBDidPayData calldata _data) internal {
     // Swap 95% of the amount paid in.
     uint256 _amountToSwap = (_data.amount.value * 95) / 100;
 
