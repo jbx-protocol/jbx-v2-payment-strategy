@@ -39,6 +39,7 @@ contract TestPayParams is TestBaseWorkflow {
   IJBPaymentTerminal[] _terminals; // Default empty
   uint256 _projectId;
 
+  uint256 reservedRate = 5000;
   DataSourceDelegate _delegate;
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
@@ -47,9 +48,11 @@ contract TestPayParams is TestBaseWorkflow {
   IUniswapV3Pool private constant pool = IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
 
   function setUp() public override {
-    super.setUp();
+    evm.label(address(pool), 'uniswapPool');
+    evm.label(address(weth), '$WETH');
+    evm.label(address(jbx), '$JBX');
 
-    uint256 reservedRate = 5000;
+    super.setUp();
 
     controller = jbController();
 
@@ -63,6 +66,44 @@ contract TestPayParams is TestBaseWorkflow {
       discountRate: 0,
       ballot: IJBReconfigurationBufferBallot(address(0))
     });
+
+    _metadata = JBFundingCycleMetadata({
+      global: JBGlobalFundingCycleMetadata({allowSetTerminals: false, allowSetController: false}),
+      reservedRate: 10000,
+      redemptionRate: 5000,
+      ballotRedemptionRate: 0,
+      pausePay: false,
+      pauseDistributions: false,
+      pauseRedeem: false,
+      pauseBurn: false,
+      allowMinting: true,
+      allowChangeToken: false,
+      allowTerminalMigration: false,
+      allowControllerMigration: false,
+      holdFees: false,
+      useTotalOverflowForRedemptions: false,
+      useDataSourceForPay: true,
+      useDataSourceForRedeem: false,
+      dataSource: address(_delegate)
+    });
+
+    _terminals = [jbETHPaymentTerminal()];
+
+    _projectId = controller.launchProjectFor(
+      multisig(),
+      _projectMetadata,
+      _data,
+      _metadata,
+      0, // Start asap
+      _groupedSplits,
+      _fundAccessConstraints,
+      _terminals,
+      ''
+    );
+  }
+
+  function testPayParamsNormalBehaviorWithNonMaxReservedRate() public {
+    uint256 payAmountInWei = 10 ether;
 
     _metadata = JBFundingCycleMetadata({
       global: JBGlobalFundingCycleMetadata({allowSetTerminals: false, allowSetController: false}),
@@ -97,10 +138,37 @@ contract TestPayParams is TestBaseWorkflow {
       _terminals,
       ''
     );
+
+    jbETHPaymentTerminal().pay{value: payAmountInWei}(
+      _projectId,
+      payAmountInWei,
+      address(0),
+      beneficiary(),
+      /* _minReturnedTokens */
+      1,
+      /* _preferClaimedTokens */
+      false,
+      /* _memo */
+      'Take my money!',
+      /* _delegateMetadata */
+      new bytes(0)
+    );
   }
 
-  function testPayParams() public {
+  function testPayParamsMint() public {
     uint256 payAmountInWei = 10 ether;
+
+    evm.etch(address(pool), '0x69');
+
+    uint256[] memory _ticks = new uint256[](2);
+    _ticks[0] = 10;
+    _ticks[1] = 130;
+
+    evm.mockCall(
+      address(pool),
+      abi.encodeWithSelector(IUniswapV3PoolDerivedState.observe.selector),
+      abi.encode(_ticks, _ticks)
+    );
 
     jbETHPaymentTerminal().pay{value: payAmountInWei}(
       _projectId,

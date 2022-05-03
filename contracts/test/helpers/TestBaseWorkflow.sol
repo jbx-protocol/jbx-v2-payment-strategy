@@ -133,10 +133,6 @@ contract TestBaseWorkflow is DSTest {
     return _jbETHPaymentTerminal;
   }
 
-  function jbERC20PaymentTerminal() internal view returns (JBERC20PaymentTerminal) {
-    return _jbERC20PaymentTerminal;
-  }
-
   function jbToken() internal view returns (JBToken) {
     return _jbToken;
   }
@@ -228,22 +224,6 @@ contract TestBaseWorkflow is DSTest {
 
     evm.prank(_multisig);
     _jbToken.mint(0, _multisig, 100 * 10**18);
-
-    // JBERC20PaymentTerminal
-    _jbERC20PaymentTerminal = new JBERC20PaymentTerminal(
-      _jbToken,
-      _accessJBLib.ETH(), // currency
-      _accessJBLib.ETH(), // base weight currency
-      1, // JBSplitsGroupe
-      _jbOperatorStore,
-      _jbProjects,
-      _jbDirectory,
-      _jbSplitsStore,
-      _jbPrices,
-      _jbPaymentTerminalStore,
-      _multisig
-    );
-    evm.label(address(_jbERC20PaymentTerminal), 'JBERC20PaymentTerminal');
   }
 
   //https://ethereum.stackexchange.com/questions/24248/how-to-calculate-an-ethereum-contracts-address-during-its-creation-using-the-so

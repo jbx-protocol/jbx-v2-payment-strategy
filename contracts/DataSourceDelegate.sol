@@ -24,7 +24,7 @@ import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 
 contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUniswapV3SwapCallback {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
-
+  event Test(uint256);
   error unAuth();
   error Slippage();
 
@@ -85,7 +85,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       address(weth),
       address(jbx)
     );
-
+    emit Test(_swapTokenCountQuote);
     // Get the current overflow allowance.
     (uint256 _currentAllowance, ) = IJBController(jbxTerminal.directory().controllerOf(projectId))
       .overflowAllowanceOf(
