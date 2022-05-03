@@ -37,6 +37,7 @@ contract TestPayParams is TestBaseWorkflow {
   JBGroupedSplits[] _groupedSplits; // Default empty
   JBFundAccessConstraints[] _fundAccessConstraints; // Default empty
   IJBPaymentTerminal[] _terminals; // Default empty
+  uint256 _projectId;
 
   DataSourceDelegate _delegate;
 
@@ -84,10 +85,8 @@ contract TestPayParams is TestBaseWorkflow {
     });
 
     _terminals = [jbETHPaymentTerminal()];
-  }
 
-  function testPayParams() public {
-    uint256 projectId = controller.launchProjectFor(
+    _projectId = controller.launchProjectFor(
       multisig(),
       _projectMetadata,
       _data,
@@ -97,6 +96,25 @@ contract TestPayParams is TestBaseWorkflow {
       _fundAccessConstraints,
       _terminals,
       ''
+    );
+  }
+
+  function testPayParams() public {
+    uint256 payAmountInWei = 10 ether;
+
+    jbETHPaymentTerminal().pay{value: payAmountInWei}(
+      _projectId,
+      payAmountInWei,
+      address(0),
+      beneficiary(),
+      /* _minReturnedTokens */
+      1,
+      /* _preferClaimedTokens */
+      false,
+      /* _memo */
+      'Take my money!',
+      /* _delegateMetadata */
+      new bytes(0)
     );
   }
 }
