@@ -167,7 +167,7 @@ contract TestPayParams is TestBaseWorkflow {
     evm.mockCall(
       address(pool),
       abi.encodeWithSelector(IUniswapV3PoolDerivedState.observe.selector),
-      abi.encode(_ticks, _ticks)
+      abi.encode(_ticks, _ticks) // Second returned value is dropped in oracle lib
     );
 
     jbETHPaymentTerminal().pay{value: payAmountInWei}(
