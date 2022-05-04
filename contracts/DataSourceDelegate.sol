@@ -62,7 +62,9 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     )
   {
     // The terminal must be the jbx terminal.
-    if (_data.terminal != jbxTerminal) revert unAuth();
+    if (msg.sender != address(jbxTerminal)) revert unAuth();
+
+    //if (_data.terminal != jbxTerminal) revert unAuth();
 
     // Get the current funding cycle.
     JBFundingCycle memory _currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
