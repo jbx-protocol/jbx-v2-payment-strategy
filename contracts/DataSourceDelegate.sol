@@ -85,6 +85,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       address(weth),
       address(jbx)
     );
+    emit Test(_mintTokenCountQuote);
     emit Test(_swapTokenCountQuote);
     // Get the current overflow allowance.
     (uint256 _currentAllowance, ) = IJBController(jbxTerminal.directory().controllerOf(projectId))
