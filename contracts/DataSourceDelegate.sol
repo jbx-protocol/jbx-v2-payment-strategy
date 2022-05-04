@@ -62,7 +62,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     )
   {
     // The terminal must be the jbx terminal.
-    if (msg.sender != address(jbxTerminal)) revert unAuth();
+    if (msg.sender != address(jbxTerminal.store())) revert unAuth();
 
     //if (_data.terminal != jbxTerminal) revert unAuth();
 
