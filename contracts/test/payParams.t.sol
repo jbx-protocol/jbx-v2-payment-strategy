@@ -42,6 +42,7 @@ contract TestPayParams is TestBaseWorkflow {
   uint256 _projectId;
 
   uint256 reservedRate = 5000;
+  uint256 weight = 10000 * 10**18;
   DataSourceDelegate _delegate;
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
@@ -64,7 +65,7 @@ contract TestPayParams is TestBaseWorkflow {
 
     _data = JBFundingCycleData({
       duration: 6 days,
-      weight: 10000 * 10**18,
+      weight: weight,
       discountRate: 0,
       ballot: IJBReconfigurationBufferBallot(address(0))
     });
@@ -179,6 +180,11 @@ contract TestPayParams is TestBaseWorkflow {
       /* _delegateMetadata */
       new bytes(0)
     );
+
+    uint256 amountOutTheory = (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
+      JBConstants.MAX_RESERVED_RATE;
+
+    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
   }
 
   function testPayParamsMint() public {
@@ -211,6 +217,12 @@ contract TestPayParams is TestBaseWorkflow {
       /* _delegateMetadata */
       new bytes(0)
     );
+
+    // Delegate is deployed using reservedRate
+    uint256 amountOutTheory = (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
+      JBConstants.MAX_RESERVED_RATE;
+
+    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
   }
 
   function testPayParamsSwap() public {
