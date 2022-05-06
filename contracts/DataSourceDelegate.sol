@@ -64,8 +64,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     // The terminal must be the jbx terminal.
     if (msg.sender != address(jbxTerminal.store())) revert unAuth();
 
-    //if (_data.terminal != jbxTerminal) revert unAuth();
-
     // Get the current funding cycle.
     JBFundingCycle memory _currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
 
@@ -87,8 +85,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       address(weth),
       address(jbx)
     );
-    emit Test(_mintTokenCountQuote);
-    emit Test(_swapTokenCountQuote);
+
     // Get the current overflow allowance.
     (uint256 _currentAllowance, ) = IJBController(jbxTerminal.directory().controllerOf(projectId))
       .overflowAllowanceOf(
@@ -129,12 +126,20 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
       uint256 _reservedWeight = PRBMath.mulDiv(
         _data.weight,
-        JBConstants.MAX_RESERVED_RATE,
-        JBConstants.MAX_RESERVED_RATE - reservedRate
-      ) - _data.weight;
+        reservedRate,
+        JBConstants.MAX_RESERVED_RATE
+      );
 
       // Store the token count to mint. This will be referenced and reset in the delegate.
-      _issueTokenCount = _mintTokenCountQuote;
+      _issueTokenCount = PRBMath.mulDiv(
+        _data.amount.value,
+        PRBMath.mulDiv(
+          _data.weight,
+          JBConstants.MAX_RESERVED_RATE - reservedRate,
+          JBConstants.MAX_RESERVED_RATE
+        ),
+        10**18
+      );
 
       // Get a reference to the weight of reserved tokens to distribute.
       return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
@@ -143,7 +148,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
   function didPay(JBDidPayData calldata _data) external override {
     if (msg.sender != address(jbxTerminal)) revert unAuth();
-    JBFundingCycle memory currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
 
     // Swap if needed.
     if (_swapTokenCount > 0) {

@@ -41,7 +41,7 @@ contract TestPayParams is TestBaseWorkflow {
   IJBPaymentTerminal[] _terminals; // Default empty
   uint256 _projectId;
 
-  uint256 reservedRate = 5000;
+  uint256 reservedRate = 4000;
   uint256 weight = 10000 * 10**18;
   DataSourceDelegate _delegate;
 
@@ -219,7 +219,8 @@ contract TestPayParams is TestBaseWorkflow {
     );
 
     // Delegate is deployed using reservedRate
-    uint256 amountOutTheory = (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
+    uint256 amountOutTheory = PRBMath.mulDiv(payAmountInWei, weight, 10**18) -
+      (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
       JBConstants.MAX_RESERVED_RATE;
 
     assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
