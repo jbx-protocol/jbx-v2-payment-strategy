@@ -126,20 +126,12 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
       uint256 _reservedWeight = PRBMath.mulDiv(
         _data.weight,
-        reservedRate,
-        JBConstants.MAX_RESERVED_RATE
-      );
+        JBConstants.MAX_RESERVED_RATE,
+        JBConstants.MAX_RESERVED_RATE - reservedRate
+      ) - _data.weight;
 
       // Store the token count to mint. This will be referenced and reset in the delegate.
-      _issueTokenCount = PRBMath.mulDiv(
-        _data.amount.value,
-        PRBMath.mulDiv(
-          _data.weight,
-          JBConstants.MAX_RESERVED_RATE - reservedRate,
-          JBConstants.MAX_RESERVED_RATE
-        ),
-        10**18
-      );
+      _issueTokenCount = _mintTokenCountQuote;
 
       // Get a reference to the weight of reserved tokens to distribute.
       return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));

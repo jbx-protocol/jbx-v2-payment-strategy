@@ -219,11 +219,14 @@ contract TestPayParams is TestBaseWorkflow {
     );
 
     // Delegate is deployed using reservedRate
-    uint256 amountOutTheory = PRBMath.mulDiv(payAmountInWei, weight, 10**18) -
-      (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
-      JBConstants.MAX_RESERVED_RATE;
+    uint256 amountOutTheory = PRBMath.mulDiv(payAmountInWei, weight, 10**18);
 
     assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
+
+    assertEq(
+      controller.reservedTokenBalanceOf(_projectId, 10000),
+      (amountOutTheory * reservedRate) / 10000
+    );
   }
 
   function testPayParamsSwap() public {
