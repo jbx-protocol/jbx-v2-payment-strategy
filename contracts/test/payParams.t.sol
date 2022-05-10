@@ -224,7 +224,7 @@ contract TestPayParams is TestBaseWorkflow {
     assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
 
     assertEq(
-      controller.reservedTokenBalanceOf(_projectId, 10000),
+      controller.reservedTokenBalanceOf(_projectId, reservedRate),
       (amountOutTheory * reservedRate) / 10000
     );
   }
