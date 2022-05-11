@@ -4,7 +4,7 @@ pragma solidity 0.8.6;
 import '../interfaces/external/IWETH9.sol';
 import './helpers/TestBaseWorkflow.sol';
 
-import '@jbx-protocol-v2/contracts/interfaces/IJBController.sol';
+import '@jbx-protocol-v2/contracts/interfaces/IJBController/1.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleStore.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleDataSource.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBOperatable.sol';
@@ -41,7 +41,7 @@ contract TestPayParams is TestBaseWorkflow {
   IJBPaymentTerminal[] _terminals; // Default empty
   uint256 _projectId;
 
-  uint256 reservedRate = 4000;
+  uint256 reservedRate = 4500;
   uint256 weight = 10000 * 10**18;
   DataSourceDelegate _delegate;
 
@@ -181,10 +181,13 @@ contract TestPayParams is TestBaseWorkflow {
       new bytes(0)
     );
 
-    uint256 amountOutTheory = (PRBMath.mulDiv(payAmountInWei, weight, 10**18) * reservedRate) /
+    uint256 totalMinted = PRBMath.mulDiv(payAmountInWei, weight, 10**18);
+    uint256 amountBeneficiary = (totalMinted * (JBConstants.MAX_RESERVED_RATE - reservedRate)) /
       JBConstants.MAX_RESERVED_RATE;
+    uint256 amountReserved = totalMinted - amountBeneficiary;
 
-    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
+    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountBeneficiary);
+    assertEq(controller.reservedTokenBalanceOf(_projectId, reservedRate), amountReserved);
   }
 
   function testPayParamsMint() public {
@@ -192,7 +195,7 @@ contract TestPayParams is TestBaseWorkflow {
 
     evm.etch(address(pool), '0x69');
 
-    // Correspond to an amount out of 9999000099990000999
+    // Correspond to an amount out of 9999000099990000999 -> mint returns more (10E18)
     uint256[] memory _ticks = new uint256[](2);
     _ticks[0] = 10;
     _ticks[1] = 130;
@@ -209,7 +212,7 @@ contract TestPayParams is TestBaseWorkflow {
       address(0),
       beneficiary(),
       /* _minReturnedTokens */
-      0,
+      0, // Cannot be used in this setting
       /* _preferClaimedTokens */
       false,
       /* _memo */
@@ -219,13 +222,15 @@ contract TestPayParams is TestBaseWorkflow {
     );
 
     // Delegate is deployed using reservedRate
-    uint256 amountOutTheory = PRBMath.mulDiv(payAmountInWei, weight, 10**18);
+    uint256 amountBeneficiary = PRBMath.mulDiv(payAmountInWei, weight, 10**18);
+    uint256 amountReserved = ((amountBeneficiary * JBConstants.MAX_RESERVED_RATE) /
+      (JBConstants.MAX_RESERVED_RATE - reservedRate)) - amountBeneficiary;
 
-    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountOutTheory);
+    assertEq(jbTokenStore().balanceOf(beneficiary(), _projectId), amountBeneficiary);
 
     assertEq(
-      controller.reservedTokenBalanceOf(_projectId, reservedRate),
-      (amountOutTheory * reservedRate) / 10000
+      controller.reservedTokenBalanceOf(_projectId, JBConstants.MAX_RESERVED_RATE),
+      (amountReserved / 10) * 10 // Last wei rounding
     );
   }
 

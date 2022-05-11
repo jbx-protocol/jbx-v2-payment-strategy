@@ -4,11 +4,11 @@ pragma solidity 0.8.6;
 import './hevm.sol';
 import '../../../lib/ds-test/src/test.sol';
 
-import '@jbx-protocol-v2/contracts/JBController.sol';
+import '@jbx-protocol-v2/contracts/JBController/1.sol';
 import '@jbx-protocol-v2/contracts/JBDirectory.sol';
-import '@jbx-protocol-v2/contracts/JBETHPaymentTerminal.sol';
-import '@jbx-protocol-v2/contracts/JBERC20PaymentTerminal.sol';
-import '@jbx-protocol-v2/contracts/JBSingleTokenPaymentTerminalStore.sol';
+import '@jbx-protocol-v2/contracts/JBETHPaymentTerminal/1.sol';
+import '@jbx-protocol-v2/contracts/JBERC20PaymentTerminal/1.sol';
+import '@jbx-protocol-v2/contracts/JBSingleTokenPaymentTerminalStore/1.sol';
 import '@jbx-protocol-v2/contracts/JBFundingCycleStore.sol';
 import '@jbx-protocol-v2/contracts/JBOperatorStore.sol';
 import '@jbx-protocol-v2/contracts/JBPrices.sol';

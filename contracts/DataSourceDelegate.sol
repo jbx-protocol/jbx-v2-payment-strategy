@@ -3,7 +3,7 @@ pragma solidity 0.8.6;
 
 import './interfaces/external/IWETH9.sol';
 
-import '@jbx-protocol-v2/contracts/interfaces/IJBController.sol';
+import '@jbx-protocol-v2/contracts/interfaces/IJBController/1.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleStore.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleDataSource.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBPayDelegate.sol';
