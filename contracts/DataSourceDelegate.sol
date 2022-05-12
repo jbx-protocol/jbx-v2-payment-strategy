@@ -71,17 +71,24 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     if (_currentFundingCycle.reservedRate() != JBConstants.MAX_RESERVED_RATE)
       return (_data.weight, _data.memo, IJBPayDelegate(address(0)));
 
-    // Get the token count that would be distributed by minting a new supply.
-    uint256 _mintTokenCountQuote = PRBMath.mulDiv(
+    // The amount including the contribution to the reserved token (100% = _data.value+reserved token)
+    uint256 entireAmount = PRBMath.mulDiv(
       _data.amount.value,
+      JBConstants.MAX_RESERVED_RATE,
+      JBConstants.MAX_RESERVED_RATE - reservedRate
+    );
+
+    // Get the token count that would be distributed to the beneficiary by minting a new supply.
+    uint256 _mintTokenCountQuote = PRBMath.mulDiv(
+      entireAmount,
       _currentFundingCycle.weight,
       10**18
     );
 
-    // Get the token count that would be distributed by swapping.
+    // Get the token count that would be distributed to the beneficiary by swapping.
     uint256 _swapTokenCountQuote = OracleLibrary.getQuoteAtTick(
       OracleLibrary.consult(address(pool), uint32(twapPeriod)),
-      uint128(_data.amount.value),
+      uint128(entireAmount),
       address(weth),
       address(jbx)
     );
@@ -102,26 +109,28 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       _currentFundingCycle.configuration
     );
 
+    // The amount of 95% x msg.value + the Juicebox treasury part to cover the swap for reserved token
+    uint256 totalToSwap = PRBMath.mulDiv(
+      (_data.amount.value * 95) / 100,
+      JBConstants.MAX_RESERVED_RATE,
+      JBConstants.MAX_RESERVED_RATE - reservedRate
+    );
+
     // If swapping yields a better rate and there's enough overflow allowance to cover the swap.
     if (
       _mintTokenCountQuote < _swapTokenCountQuote &&
-      _currentAllowance - _usedAllowance > _data.amount.value
+      _currentAllowance - _usedAllowance > totalToSwap
     ) {
-      // Get the weight which represents the amount being swapped for.
-      uint256 _swapWeight = PRBMath.mulDiv(_swapTokenCountQuote, 1E18, _data.amount.value);
-
-      // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
-      uint256 _reservedWeight = PRBMath.mulDiv(
-        _swapWeight,
-        JBConstants.MAX_RESERVED_RATE,
-        JBConstants.MAX_RESERVED_RATE - reservedRate
-      ) - _swapWeight;
-
       // Store the token count to swap. This will be referenced and reset in the delegate.
-      _swapTokenCount = _swapTokenCountQuote;
+      _swapTokenCount = OracleLibrary.getQuoteAtTick(
+        OracleLibrary.consult(address(pool), uint32(twapPeriod)),
+        uint128(totalToSwap),
+        address(weth),
+        address(jbx)
+      );
 
-      // Return the weight of reserved tokens to distribute, forward the memo, and set this contract as the delegate to execute the swap.
-      return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
+      // Do not mint, forward the memo, and set this contract as the delegate to execute the swap.
+      return (0, _data.memo, IJBPayDelegate(address(this)));
     } else {
       // Get the weight which should be used to distribute reserved tokens given a 100% reserved rate.
       uint256 _reservedWeight = PRBMath.mulDiv(
@@ -130,8 +139,8 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
         JBConstants.MAX_RESERVED_RATE - reservedRate
       ) - _data.weight;
 
-      // Store the token count to mint. This will be referenced and reset in the delegate.
-      _issueTokenCount = _mintTokenCountQuote;
+      // Store the token count to mint for the beneficiary. This will be referenced and reset in the delegate.
+      _issueTokenCount = PRBMath.mulDiv(_data.amount.value, _currentFundingCycle.weight, 10**18);
 
       // Get a reference to the weight of reserved tokens to distribute.
       return (_reservedWeight, _data.memo, IJBPayDelegate(address(this)));
@@ -168,8 +177,12 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   }
 
   function _swap(JBDidPayData calldata _data) internal {
-    // Swap 95% of the amount paid in.
-    uint256 _amountToSwap = (_data.amount.value * 95) / 100;
+    // Swap 95% of the amount paid in + the reserved token
+    uint256 _amountToSwap = PRBMath.mulDiv(
+      (_data.amount.value * 95) / 100,
+      JBConstants.MAX_RESERVED_RATE,
+      JBConstants.MAX_RESERVED_RATE - reservedRate
+    );
 
     bytes memory _swapCallData = abi.encode(_swapTokenCount);
 
@@ -186,12 +199,45 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
     // Execute the swap.
     pool.swap(
-      _data.beneficiary,
+      address(this),
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
       int256(_amountToSwap),
       0, // sqrtPriceLimit -> will check against twap in callback
       _swapCallData
     );
+
+    uint256 tokenBalance = IJBController(directory.controllerOf(projectId)).tokenStore().balanceOf(
+      address(this),
+      projectId
+    );
+
+    uint256 amountForReserved = PRBMath.mulDiv(
+      tokenBalance,
+      reservedRate,
+      JBConstants.MAX_RESERVED_RATE
+    );
+
+    // Burn and mint to reserved tokens
+    IJBController(jbxTerminal.directory().controllerOf(projectId)).burnTokensOf(
+      address(this),
+      projectId,
+      amountForReserved,
+      '',
+      false // Prefer claimed
+    );
+
+    // Mint new tokens for reserv
+    IJBController(jbxTerminal.directory().controllerOf(projectId)).mintTokensOf(
+      projectId,
+      amountForReserved,
+      _data.beneficiary,
+      '',
+      false, //_preferClaimedTokens,
+      true //_useReservedRate
+    );
+
+    // Transfer to beneficiary
+    jbx.transfer(projectId, _data.beneficiary, tokenBalance - amountForReserved);
   }
 
   function uniswapV3SwapCallback(
