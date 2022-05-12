@@ -129,6 +129,8 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
         address(jbx)
       );
 
+      emit Test(_swapTokenCount);
+
       // Do not mint, forward the memo, and set this contract as the delegate to execute the swap.
       return (0, _data.memo, IJBPayDelegate(address(this)));
     } else {
@@ -226,7 +228,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       false // Prefer claimed
     );
 
-    // Mint new tokens for reserv
+    // Mint new tokens for reserve
     IJBController(jbxTerminal.directory().controllerOf(projectId)).mintTokensOf(
       projectId,
       amountForReserved,

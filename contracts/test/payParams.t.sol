@@ -239,7 +239,7 @@ contract TestPayParams is TestBaseWorkflow {
 
     evm.etch(address(pool), '0x69');
 
-    // Correspond to an amount out of 2681696392884049922311550
+    // Correspond to an amount out of 4632021042254268047555904
     uint256[] memory _ticks = new uint256[](2);
     _ticks[0] = 15000000;
     _ticks[1] = 1;
@@ -254,6 +254,41 @@ contract TestPayParams is TestBaseWorkflow {
       address(pool),
       abi.encodeWithSelector(IUniswapV3PoolActions.swap.selector),
       abi.encode(0, 0)
+    );
+
+    jbETHPaymentTerminal().addToBalanceOf{value: payAmountInWei}(
+      _projectId,
+      payAmountInWei,
+      jbLibraries().ETHToken(),
+      '',
+      bytes('')
+    );
+
+    // Trick the balance post-swap
+    evm.prank(multisig());
+
+    jbController().mintTokensOf(
+      _projectId,
+      4632021042254268047555904,
+      address(_delegate),
+      '',
+      false,
+      false
+    );
+
+    // Mock the jbx transfer to the beneficiary
+    uint256 nonReservedAmount = (4632021042254268047555904 * reservedRate) /
+      JBConstants.MAX_RESERVED_RATE;
+
+    evm.mockCall(
+      address(jbx),
+      abi.encodeWithSelector(
+        IJBToken.transfer.selector,
+        _projectId,
+        beneficiary(),
+        nonReservedAmount
+      ),
+      abi.encode(true)
     );
 
     jbETHPaymentTerminal().pay{value: payAmountInWei}(
