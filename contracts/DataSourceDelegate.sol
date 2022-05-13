@@ -25,8 +25,10 @@ import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUniswapV3SwapCallback {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
   event Test(uint256);
-  error unAuth();
-  error Slippage();
+  error Datasource_unauth();
+  error Delegate_unauth();
+  error Callback_unauth();
+  error Callback_slippage();
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
   IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66);
@@ -40,6 +42,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
 
   uint32 private constant twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
   uint256 public constant projectId = 1;
+  uint256 public maxTwapDeviation = 10; // 1% max deviation between spot and twap
   uint256 public immutable reservedRate;
   uint256 private _swapTokenCount;
   uint256 private _issueTokenCount;
@@ -62,7 +65,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     )
   {
     // The terminal must be the jbx terminal.
-    if (msg.sender != address(jbxTerminal.store())) revert unAuth();
+    if (msg.sender != address(jbxTerminal.store())) revert Datasource_unauth();
 
     // Get the current funding cycle.
     JBFundingCycle memory _currentFundingCycle = fundingCycleStore.currentOf(_data.projectId);
@@ -129,8 +132,6 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
         address(jbx)
       );
 
-      emit Test(_swapTokenCount);
-
       // Do not mint, forward the memo, and set this contract as the delegate to execute the swap.
       return (0, _data.memo, IJBPayDelegate(address(this)));
     } else {
@@ -150,7 +151,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   }
 
   function didPay(JBDidPayData calldata _data) external override {
-    if (msg.sender != address(jbxTerminal)) revert unAuth();
+    if (msg.sender != address(jbxTerminal)) revert Delegate_unauth();
 
     // Swap if needed.
     if (_swapTokenCount > 0) {
@@ -200,18 +201,16 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     );
 
     // Execute the swap.
-    pool.swap(
+    (int256 amount0, int256 amount1) = pool.swap(
       address(this),
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
-      int256(_amountToSwap),
+      int256(_amountToSwap), // Positive -> exact input
       0, // sqrtPriceLimit -> will check against twap in callback
       _swapCallData
     );
 
-    uint256 tokenBalance = IJBController(directory.controllerOf(projectId)).tokenStore().balanceOf(
-      address(this),
-      projectId
-    );
+    // Logic now based on effective token sent, to factor price impact/ticks crossing
+    uint256 tokenBalance = address(weth) < address(jbx) ? uint256(-amount1) : uint256(-amount0); // weth token0?
 
     uint256 amountForReserved = PRBMath.mulDiv(
       tokenBalance,
@@ -247,7 +246,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     int256 amount1Delta,
     bytes calldata data
   ) external override {
-    if (msg.sender != address(pool)) revert unAuth();
+    if (msg.sender != address(pool)) revert Callback_unauth();
 
     uint256 _twapAmountReceived = abi.decode(data, (uint256));
 
@@ -256,8 +255,12 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       ? (amount0Delta, amount1Delta)
       : (amount1Delta, amount0Delta);
 
-    // Receiving less than 5% of the twap predicted amount? no bueno
-    if (uint256(-amount1Delta) < (_twapAmountReceived * 95) / 100) revert Slippage();
+    // Receiving more or less than 99% of the twap predicted amount (slippage or price manipulation)? no bueno
+    if (
+      uint256(-amount1Delta) <
+      PRBMath.mulDiv(_twapAmountReceived, (1000 - maxTwapDeviation), 1000) ||
+      uint256(-amount1Delta) > PRBMath.mulDiv(_twapAmountReceived, (1000 + maxTwapDeviation), 1000)
+    ) revert Callback_slippage();
 
     // wrap eth
     weth.deposit{value: uint256(amount0Delta)}();
