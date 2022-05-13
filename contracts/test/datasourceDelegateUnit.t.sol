@@ -28,7 +28,7 @@ import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 
 import '../DataSourceDelegate.sol';
 
-contract TestPayParams is TestBaseWorkflow {
+contract TestUnitDatasourceDelegate is TestBaseWorkflow {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
   JBController controller;
   JBProjectMetadata _projectMetadata;
