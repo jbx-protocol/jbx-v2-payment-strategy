@@ -22,18 +22,32 @@ import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol';
 
+/// @title  Juicebox Project DataSource and Delegate: project token emission control
+/// @notice Will split the token emission in terminal.pay(..) in 3 paths, based on the funding cycle reserved rate
+///         and the amount of token the beneficiary would get (to maximise it):
+///          - funding cycle reserved rate is < max reserved rate: this datasource & delegate
+///            logic is bypassed and the funding cycle's reserved rate is used.
+///          - funding cycle reserved rate == max rate and minting emission yield more token
+///            for the beneficiary: minting is privilegied
+///          - funding cycle reserved rate == max rate and swapping the eth contributed on Uniswap
+///            yield more token for the beneficiary: the overflow allowance is used to swap
+/// @dev    - This contract needs to use an overflow allowance (role USE_ALLOWANCE granted in JBOperatorStore)
+///         - TWAP period and spot-twap deviation should carefully be set, and the Uniswap pool cardinality
+///           should be increased accordingly - failing to do so would result in potential price manipulation
+///         - the amount received by the beneficiary are based on value * weight, the reserved token are emitted
+///           on top (either via new emission if minter, or via additional use of the overflow to swap them)
+/// @params _data the data passed to the data source in terminal.pay(..)
 contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUniswapV3SwapCallback {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
-  event Test(uint256);
+
   error Datasource_unauth();
   error Delegate_unauth();
   error Callback_unauth();
   error Callback_slippage();
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
-  IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66);
-
-  IUniswapV3Pool private constant pool = IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17);
+  IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66); // Replace by terminal token?
+  IUniswapV3Pool private constant pool = IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17); // Then this immutable and call uni factory in constructor
 
   IJBPayoutRedemptionPaymentTerminal public immutable jbxTerminal;
   IJBSingleTokenPaymentTerminalStore public immutable terminalStore;
@@ -41,8 +55,8 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   IJBFundingCycleStore public immutable fundingCycleStore;
 
   uint32 private constant twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
-  uint256 public constant projectId = 1;
-  uint256 public maxTwapDeviation = 10; // 1% max deviation between spot and twap
+  uint256 public constant projectId = 1; // terminal.projectId in constructor
+  uint256 public maxTwapDeviation = 10; // 1% max deviation between spot and twap ->
   uint256 public immutable reservedRate;
   uint256 private _swapTokenCount;
   uint256 private _issueTokenCount;
@@ -55,6 +69,13 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     reservedRate = _reservedRate;
   }
 
+  /// @notice the datasource implementation
+  /// @dev    the quote to swap is based on an amount in of 95% of the value sent + an amount corresponding to the reserved
+  ///         rate, coming from the treasury
+  /// @return weight the weight to use (the one passed if not max reserved rate, 0 if swapping or the one corresponding
+  ///         to the reserved token to mint if minting)
+  /// @return memo the original memo passed
+  /// @return delegate the address of this contract, passed if minting or swapiing is required (to trigger the delegate funciton)
   function payParams(JBPayParamsData calldata _data)
     external
     override
@@ -150,6 +171,9 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     }
   }
 
+  /// @notice delegate to either swap or mint to the beneficiary (the mint to reserved being done by the delegate function, via
+  ///         the weight).
+  /// @params _data the delegate data passed by the terminal
   function didPay(JBDidPayData calldata _data) external override {
     if (msg.sender != address(jbxTerminal)) revert Delegate_unauth();
 
@@ -205,7 +229,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       address(this),
       address(weth) < address(jbx) ? true : false, // zeroForOne <=> eth->jbx?
       int256(_amountToSwap), // Positive -> exact input
-      0, // sqrtPriceLimit -> will check against twap in callback
+      0, // No price limit, amount received will be checked against twap in callback
       _swapCallData
     );
 
@@ -241,6 +265,8 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     jbx.transfer(projectId, _data.beneficiary, tokenBalance - amountForReserved);
   }
 
+  /// @inheritdoc IUniswapV3Callback
+  /// @dev the twap-spot deviation is checked in this callback
   function uniswapV3SwapCallback(
     int256 amount0Delta,
     int256 amount1Delta,
@@ -265,10 +291,11 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     // wrap eth
     weth.deposit{value: uint256(amount0Delta)}();
 
-    // send weth
+    // send weth to the pool
     weth.transfer(address(pool), uint256(amount0Delta));
   }
 
+  /// @dev receive eth from the overflow allowance
   // solhint-disable-next-line comprehensive-interface
   receive() external payable {}
 
@@ -278,6 +305,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       _interfaceId == type(IJBPayDelegate).interfaceId;
   }
 
+  /// @dev unused, for interface implementation completion
   function redeemParams(JBRedeemParamsData calldata _data)
     external
     override

@@ -114,7 +114,7 @@ contract TestPayParams is TestBaseWorkflow {
       JBOperatorData({operator: address(_delegate), domain: 1, permissionIndexes: permissionIndex})
     );
 
-    // Set terminal as feeless
+    // Set delegate as feeless
     evm.prank(multisig());
     jbETHPaymentTerminal().setFeelessAddress(address(_delegate), true);
 
