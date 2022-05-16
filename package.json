@@ -21,7 +21,7 @@
     "solidity-coverage": "^0.8.0-beta.1"
   },
   "dependencies": {
-    "@jbx-protocol/contracts-v2": "^2.0.0",
+    "@jbx-protocol/contracts-v2": "file:lib/juice-contracts-v2",
     "dotenv": "^10.0.0",
     "esm": "^3.2.25",
     "glob": "^7.2.0",
