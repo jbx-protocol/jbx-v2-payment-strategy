@@ -8,8 +8,8 @@ remappings = [
     '@jbx-protocol-v2=lib/juice-contracts-v2',
     '@openzeppelin=lib/openzeppelin-contracts',
     '@paulrberg/contracts/math/=lib/prb-math/contracts',
-    '@uniswap/v3-core/=lib/uniswap-v3-core',
-    '@uniswap/v3-core/=lib/uniswap-v3-periphery',
+    '@uniswap/v3-core/=lib/uniswap-v3-core/',
+    '@uniswap/v3-periphery/=lib/uniswap-v3-periphery/',
     'ds-test/=lib/ds-test/src/',
     'forge-std/=lib/forge-std/src/',
 ]
@@ -35,4 +35,3 @@ block_base_fee_per_gas = 0
 block_coinbase = '0x0000000000000000000000000000000000000000'
 block_timestamp = 1643802347
 block_difficulty = 0
-
