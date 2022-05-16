@@ -16,3 +16,6 @@
 [submodule "lib/uniswap-v3-periphery"]
 	path = lib/uniswap-v3-periphery
 	url = https://github.com/lbertenasco/uniswap-v3-periphery
+[submodule "lib/juice-contracts-v2"]
+	path = lib/juice-contracts-v2
+	url = https://github.com/jbx-protocol/juice-contracts-v2
