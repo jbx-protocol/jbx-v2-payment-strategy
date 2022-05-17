@@ -7,14 +7,17 @@ import '@jbx-protocol-v2/contracts/interfaces/IJBController/1.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleStore.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBFundingCycleDataSource.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBPayDelegate.sol';
-import '@jbx-protocol-v2/contracts/interfaces/IJBRedemptionDelegate.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBPayoutRedemptionPaymentTerminal.sol';
+import '@jbx-protocol-v2/contracts/interfaces/IJBProjects.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBSingleTokenPaymentTerminalStore.sol';
+import '@jbx-protocol-v2/contracts/interfaces/IJBRedemptionDelegate.sol';
 import '@jbx-protocol-v2/contracts/interfaces/IJBToken.sol';
+
 import '@jbx-protocol-v2/contracts/libraries/JBConstants.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBCurrencies.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBFundingCycleMetadataResolver.sol';
 import '@jbx-protocol-v2/contracts/libraries/JBTokens.sol';
+
 import '@jbx-protocol-v2/contracts/structs/JBFundingCycle.sol';
 
 import '@paulrberg/contracts/math/PRBMath.sol';
@@ -22,40 +25,73 @@ import '@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 import '@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol';
 
-/// @title  Juicebox Project DataSource and Delegate: project token emission control
-/// @notice Will split the token emission in terminal.pay(..) in 3 paths, based on the funding cycle reserved rate
-///         and the amount of token the beneficiary would get (to maximise it):
-///          - funding cycle reserved rate is < max reserved rate: this datasource & delegate
-///            logic is bypassed and the funding cycle's reserved rate is used.
-///          - funding cycle reserved rate == max rate and minting emission yield more token
-///            for the beneficiary: minting is privilegied
-///          - funding cycle reserved rate == max rate and swapping the eth contributed on Uniswap
-///            yield more token for the beneficiary: the overflow allowance is used to swap
-/// @dev    - This contract needs to use an overflow allowance (role USE_ALLOWANCE granted in JBOperatorStore)
-///         - TWAP period and spot-twap deviation should carefully be set, and the Uniswap pool cardinality
-///           should be increased accordingly - failing to do so would result in potential price manipulation
-///         - the amount received by the beneficiary are based on value * weight, the reserved token are emitted
-///           on top (either via new emission if minter, or via additional use of the overflow to swap them)
+/**
+  @title
+    Juicebox Project DataSource and Delegate: project token emission control
+  @notice Will split the token emission in terminal.pay(..) in 3 paths, based on the funding cycle reserved rate
+          and the amount of token the beneficiary would get (to maximise it):
+          - funding cycle reserved rate is < max reserved rate: this datasource & delegate
+            logic is bypassed and the funding cycle's reserved rate is used.
+          - funding cycle reserved rate == max rate and minting emission yield more token
+            for the beneficiary: minting is privilegied
+          - funding cycle reserved rate == max rate and swapping the eth contributed on Uniswap
+            yield more token for the beneficiary: the overflow allowance is used to swap
+  @dev    This contract needs to use an overflow allowance (role USE_ALLOWANCE granted in JBOperatorStore)
+          TWAP period and spot-twap deviation should carefully be set, and the Uniswap pool cardinality
+           should be increased accordingly - failing to do so would result in potential price manipulation
+          The amount received by the beneficiary are based on value * weight, the reserved token are emitted
+           on top (either via new emission if minter, or via additional use of the overflow to swap them)
+*/
+
 contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUniswapV3SwapCallback {
   using JBFundingCycleMetadataResolver for JBFundingCycle;
+
+  //*********************************************************************//
+  // --------------------------- custom errors ------------------------- //
+  //*********************************************************************//
 
   error Datasource_unauth();
   error Delegate_unauth();
   error Callback_unauth();
   error Callback_slippage();
+  error setTwapDeviation_unauth();
+  error setReservedRate_unauth();
+  error setSwappedPortion_unauth();
+  error setTwapPeriod_unauth();
+
+  //*********************************************************************//
+  // --------------------------- unherited events----------------------- //
+  //*********************************************************************//
+
+  event NewTwapPeriod(uint32 oldTwapPeriod, uint32 newTwapPeriod);
+  event NewTwapDeviation(uint256 oldTwapDeviation, uint256 newTwapDeviation);
+  event NewReservedRate(uint256 oldReservedRate, uint256 newReservedRate);
+  event NewSwappedPortion(uint256 oldSwappedPortion, uint256 newSwappedPortion);
+
+  //*********************************************************************//
+  // --------------------- private constant properties ----------------- //
+  //*********************************************************************//
 
   IWETH9 private constant weth = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
   IJBToken private constant jbx = IJBToken(0x3abF2A4f8452cCC2CF7b4C1e4663147600646f66); // Replace by terminal token?
   IUniswapV3Pool private constant pool = IUniswapV3Pool(0x48598Ff1Cee7b4d31f8f9050C2bbAE98e17E6b17); // Then this immutable and call uni factory in constructor
 
+  //*********************************************************************//
+  // --------------------- public constant properties ------------------ //
+  //*********************************************************************//
+
   IJBPayoutRedemptionPaymentTerminal public immutable jbxTerminal;
   IJBSingleTokenPaymentTerminalStore public immutable terminalStore;
   IJBDirectory public immutable directory;
   IJBFundingCycleStore public immutable fundingCycleStore;
+  uint256 public constant projectId = 1;
 
-  uint32 private twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
-  uint256 public constant projectId = 1; // terminal.projectId in constructor
-  uint256 public maxTwapDeviation = 10; // 1% max deviation between spot and twap ->
+  //*********************************************************************//
+  // --------------------- public stored properties -------------------- //
+  //*********************************************************************//
+
+  uint32 public twapPeriod = 120;
+  uint256 public maxTwapDeviation = 10;
   uint256 public swappedPortion = 950;
   uint256 public reservedRate;
   uint256 private _swapTokenCount;
@@ -69,14 +105,20 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     reservedRate = _reservedRate;
   }
 
-  /// @notice the datasource implementation
-  /// @dev    the quote to swap is based on an amount in of 95% of the value sent + an amount corresponding to the reserved
-  ///         rate, coming from the treasury
-  /// @param _data the data passed to the data source in terminal.pay(..)
-  /// @return weight the weight to use (the one passed if not max reserved rate, 0 if swapping or the one corresponding
-  ///         to the reserved token to mint if minting)
-  /// @return memo the original memo passed
-  /// @return delegate the address of this contract, passed if minting or swapiing is required (to trigger the delegate funciton)
+  /**
+    @notice
+    The datasource implementation
+
+    @dev    the quote to swap is based on an amount in of 95% of the value sent + an amount corresponding to the reserved
+            rate, coming from the treasury
+
+    @param _data the data passed to the data source in terminal.pay(..)
+
+    @return weight the weight to use (the one passed if not max reserved rate, 0 if swapping or the one corresponding
+            to the reserved token to mint if minting)
+    @return memo the original memo passed
+    @return delegate the address of this contract, passed if minting or swapiing is required (to trigger the delegate functIon)
+  */
   function payParams(JBPayParamsData calldata _data)
     external
     override
@@ -172,9 +214,13 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     }
   }
 
-  /// @notice delegate to either swap or mint to the beneficiary (the mint to reserved being done by the delegate function, via
-  ///         the weight).
-  /// @param _data the delegate data passed by the terminal
+  /**
+    @notice
+    Delegate to either swap or mint to the beneficiary (the mint to reserved being done by the delegate function, via
+    the weight).
+
+    @param _data the delegate data passed by the terminal
+   */
   function didPay(JBDidPayData calldata _data) external override {
     if (msg.sender != address(jbxTerminal)) revert Delegate_unauth();
 
@@ -266,7 +312,12 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     jbx.transfer(projectId, _data.beneficiary, tokenBalance - amountForReserved);
   }
 
-  /// @dev the twap-spot deviation is checked in this callback
+  /**
+    @notice
+    The Uniswap V3 pool callback (where token transfer should happens)
+
+    @dev the twap-spot deviation is checked in this callback
+  */
   function uniswapV3SwapCallback(
     int256 amount0Delta,
     int256 amount1Delta,
@@ -295,7 +346,9 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
     weth.transfer(address(pool), uint256(amount0Delta));
   }
 
-  /// @dev receive eth from the overflow allowance
+  /**
+    @dev  in order to receive eth from the overflow allowance
+  */
   // solhint-disable-next-line comprehensive-interface
   receive() external payable {}
 
@@ -305,7 +358,9 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       _interfaceId == type(IJBPayDelegate).interfaceId;
   }
 
-  /// @dev unused, for interface implementation completion
+  /**
+    @dev unused, for interface implementation completion
+  */
   function redeemParams(JBRedeemParamsData calldata _data)
     external
     override
@@ -317,21 +372,30 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   {}
 
   function setTwapPeriod(uint32 _time) external {
-    //todo: access control + event
+    if (msg.sender == IJBProjects(directory.projects()).ownerOf(projectId))
+      revert setTwapPeriod_unauth();
+    emit NewTwapPeriod(twapPeriod, _time);
     twapPeriod = _time;
   }
 
   function setMaxTwapDeviation(uint256 _deviation) external {
-    //access control + event
+    if (msg.sender == IJBProjects(directory.projects()).ownerOf(projectId))
+      revert setTwapDeviation_unauth();
+    emit NewTwapDeviation(maxTwapDeviation, _deviation);
     maxTwapDeviation = _deviation;
   }
 
   function setReservedRate(uint256 _reservedRate) external {
-    //access control + event
+    if (msg.sender == IJBProjects(directory.projects()).ownerOf(projectId))
+      revert setReservedRate_unauth();
+    emit NewReservedRate(reservedRate, _reservedRate);
     reservedRate = _reservedRate;
   }
 
   function setSwappedPortion(uint256 _portion) external {
+    if (msg.sender == IJBProjects(directory.projects()).ownerOf(projectId))
+      revert setSwappedPortion_unauth();
+    emit NewSwappedPortion(swappedPortion, _portion);
     swappedPortion = _portion;
   }
 }
