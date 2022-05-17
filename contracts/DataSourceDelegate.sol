@@ -53,10 +53,11 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   IJBDirectory public immutable directory;
   IJBFundingCycleStore public immutable fundingCycleStore;
 
-  uint32 private constant twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
+  uint32 private twapPeriod = 120; // ADD SETTERS, shouldn't be constant + setter for max twap/spot deviation
   uint256 public constant projectId = 1; // terminal.projectId in constructor
   uint256 public maxTwapDeviation = 10; // 1% max deviation between spot and twap ->
-  uint256 public immutable reservedRate;
+  uint256 public swappedPortion = 950;
+  uint256 public reservedRate;
   uint256 private _swapTokenCount;
   uint256 private _issueTokenCount;
 
@@ -206,7 +207,7 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
   function _swap(JBDidPayData calldata _data) internal {
     // Swap 95% of the amount paid in + the reserved token
     uint256 _amountToSwap = PRBMath.mulDiv(
-      (_data.amount.value * 95) / 100,
+      (_data.amount.value * swappedPortion) / 1000,
       JBConstants.MAX_RESERVED_RATE,
       JBConstants.MAX_RESERVED_RATE - reservedRate
     );
@@ -314,4 +315,23 @@ contract DataSourceDelegate is IJBFundingCycleDataSource, IJBPayDelegate, IUnisw
       IJBRedemptionDelegate delegate
     )
   {}
+
+  function setTwapPeriod(uint32 _time) external {
+    //todo: access control + event
+    twapPeriod = _time;
+  }
+
+  function setMaxTwapDeviation(uint256 _deviation) external {
+    //access control + event
+    maxTwapDeviation = _deviation;
+  }
+
+  function setReservedRate(uint256 _reservedRate) external {
+    //access control + event
+    reservedRate = _reservedRate;
+  }
+
+  function setSwappedPortion(uint256 _portion) external {
+    swappedPortion = _portion;
+  }
 }
